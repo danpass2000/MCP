@@ -1,0 +1,52 @@
+我來為你創建一個 Java 版本的 MCP Proxy Server 範例:我為你創建了一個 Java 版本的 MCP Proxy Server!
+
+## 主要功能:
+
+1. **多 Server 管理**: 可以註冊和啟動多個後端 MCP Server
+2. **工具命名空間**: 使用前綴避免不同 Server 的工具名稱衝突
+3. **請求路由**: 根據工具名稱自動路由到對應的後端 Server
+4. **標準 MCP 協議**: 完整實現 initialize、tools/list、tools/call
+
+## 使用方式:
+
+**1. Maven 依賴 (pom.xml)**:
+```xml
+<dependency>
+    <groupId>com.fasterxml.jackson.core</groupId>
+    <artifactId>jackson-databind</artifactId>
+    <version>2.15.2</version>
+</dependency>
+```
+
+**2. 配置後端 Servers**:
+```java
+// 在構造函數中註冊你的 servers
+registerServer(new ServerConfig(
+    "my-server",
+    "node",  // 或 "python", "java" 等
+    new String[]{"path/to/server.js"},
+    "myserver"  // 工具前綴
+));
+```
+
+**3. Claude Desktop 配置**:
+```json
+{
+  "mcpServers": {
+    "proxy": {
+      "command": "java",
+      "args": ["-cp", "target/classes", "MCPProxyServer"]
+    }
+  }
+}
+```
+
+## 工作原理:
+
+- 工具 `weather_getTemperature` → 路由到 weather-server
+- 工具 `db_query` → 路由到 database-server
+
+需要我補充更多功能嗎?例如:
+- 錯誤重試機制
+- Server 健康檢查
+- 動態添加/移除 Server
