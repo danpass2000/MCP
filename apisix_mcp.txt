@@ -1,0 +1,65 @@
+這是個很有趣的問題!讓我分析一下可行性:
+
+## 可以,但需要理解架構差異
+
+### 情境說明
+你有多個網站提供:
+- Axis Web Service (SOAP)
+- 或 Web API (REST)
+
+想透過 APISIX 統一成 **MCP 伺服器**供 AI 應用使用。
+
+## 實作方式
+
+### 方案 1: **APISIX + 自定義 MCP 伺服器層** (推薦)
+```
+AI Client (MCP Client)
+    ↓
+自定義 MCP 伺服器 (實作 MCP 協議)
+    ↓
+APISIX (API Gateway)
+    ↓
+多個後端服務 (Axis/Web API)
+```
+
+**架構說明:**
+1. 開發一個 MCP 伺服器,實作 MCP 協議的 Tools/Resources
+2. 這個 MCP 伺服器內部調用各網站的 Web Service/API
+3. APISIX 作為中間層提供:
+   - 路由管理(將請求轉發到不同後端)
+   - 身份驗證、限流
+   - 負載均衡
+   - 統一監控
+
+### 方案 2: **APISIX 直接暴露 API + AI 直接調用**
+```
+AI Client (直接 HTTP 調用)
+    ↓
+APISIX (API Gateway)
+    ↓
+多個後端服務 (Axis/Web API)
+```
+
+**這種方式:**
+- 不需要 MCP 協議
+- AI 直接透過 Function Calling 調用 APISIX 暴露的 REST API
+- APISIX 負責路由到各個後端服務
+
+## 關鍵考量
+
+### ❌ APISIX 本身**不會自動**將 Web Service/API 轉換成 MCP 協議
+- mcp-bridge 插件是用來將 stdio 型 MCP 伺服器轉換為 HTTP SSE
+- 它**不是**用來把普通 API 轉換成 MCP 伺服器
+
+### ✅ 你需要的是:
+1. **開發 MCP 適配層**: 撰寫一個符合 MCP 協議的伺服器,內部整合各個 Web Service/API
+2. **APISIX 角色**: 作為這些服務的統一入口和管理層
+3. **協議轉換**: 在 MCP 伺服器層處理 MCP ↔ SOAP/REST 的轉換
+
+## 實務建議
+
+如果你的目標是讓 AI 使用這些服務:
+- **簡單方案**: 直接用 APISIX 統一管理 API,讓 AI 透過 Function Calling 調用(不需要 MCP)
+- **完整方案**: 開發 MCP Server → 使用 APISIX 管理後端服務 → 提供完整的 MCP 生態體驗
+
+你的使用場景是什麼?這樣我可以給更具體的建議!

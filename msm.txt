@@ -1,0 +1,20 @@
+1. Spring Data JPA
+2. AOP
+
+3. log4j + logback  (SL4J)
+
+logback
+<configuration scan="true" scanPeriod="60 seconds" debug="false">
+
+4. Spring Boot推薦使用Redis Server來控制我們的Session 
+Redis(Remote Dictionary Server)
+
+5. RESTful Web Service(Representational state transfer (RESTful風格)
+REST是一個設計理念， REST把所有WEB上的東西都以一個資源(Resource)去看待，
+並且所有資源都會有一個URI(Uniform Resource Identifier),RESTful Web Service,
+符合REST Web服務允許系統使用統一和預定的無狀態操作(Representational state transfer)集訪問和操作Web資源
+
+Richardson博士提出的RESTful Web Service的設計風格,將REST分成了0~3個層級模型
+
+Google Chrome的擴充工具Advanced REST client(ARC)來做REST資源請求的測試與介紹@RestController的相關的參數
+@RestController是組合的註解,結合了@Controller和@ResponseBody

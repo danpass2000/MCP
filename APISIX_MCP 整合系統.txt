@@ -1,0 +1,476 @@
+# ============================================
+# APISIX + MCP 完整整合配置範例
+# ============================================
+
+# ============================================
+# 1. Docker Compose 配置
+# ============================================
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # APISIX 網關
+  apisix:
+    image: apache/apisix:latest
+    container_name: apisix
+    restart: always
+    volumes:
+      - ./apisix_conf/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ./apisix_logs:/usr/local/apisix/logs
+    depends_on:
+      - etcd
+    ports:
+      - "9080:9080"   # HTTP 端口
+      - "9443:9443"   # HTTPS 端口
+      - "9180:9180"   # Admin API
+    networks:
+      - apisix
+
+  # etcd - APISIX 配置中心
+  etcd:
+    image: bitnami/etcd:3.5.9
+    container_name: etcd
+    restart: always
+    environment:
+      ETCD_ENABLE_V2: "true"
+      ALLOW_NONE_AUTHENTICATION: "yes"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+      ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+    ports:
+      - "2379:2379"
+    networks:
+      - apisix
+
+  # Prometheus - 監控
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - apisix
+
+  # Grafana - 可視化
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - apisix
+
+networks:
+  apisix:
+    driver: bridge
+
+# ============================================
+# 2. APISIX 主配置文件
+# ============================================
+# apisix_conf/config.yaml
+apisix:
+  node_listen: 9080
+  enable_admin: true
+  enable_admin_cors: true
+  
+  admin_key:
+    - name: "admin"
+      key: your-admin-key-here
+      role: admin
+
+etcd:
+  host:
+    - "http://etcd:2379"
+  prefix: "/apisix"
+  timeout: 30
+
+plugins:
+  - mcp-bridge          # MCP 橋接插件
+  - jwt-auth            # JWT 認證
+  - key-auth            # API Key 認證
+  - limit-req           # 請求限流
+  - limit-conn          # 連接限流
+  - limit-count         # 計數限流
+  - prometheus          # Prometheus 監控
+  - zipkin              # 分佈式追蹤
+  - cors                # CORS 跨域
+  - request-id          # 請求 ID
+  - wolf-rbac           # RBAC 權限控制
+  - proxy-rewrite       # 代理重寫
+  - response-rewrite    # 響應重寫
+
+plugin_attr:
+  prometheus:
+    export_addr:
+      ip: "0.0.0.0"
+      port: 9091
+
+# ============================================
+# 3. MCP 服務路由配置
+# ============================================
+# 使用 APISIX Admin API 創建路由
+
+# 3.1 文件系統 MCP Server
+curl -X PUT http://localhost:9180/apisix/admin/routes/mcp-filesystem \
+-H "X-API-KEY: your-admin-key-here" \
+-H "Content-Type: application/json" \
+-d '{
+  "name": "MCP Filesystem Server",
+  "desc": "提供文件系統訪問的 MCP 服務",
+  "uri": "/mcp/filesystem/*",
+  "methods": ["GET", "POST", "OPTIONS"],
+  "plugins": {
+    "mcp-bridge": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/data/shared"
+      ],
+      "env": {
+        "NODE_ENV": "production"
+      }
+    },
+    "jwt-auth": {
+      "header": "Authorization",
+      "query": "jwt",
+      "cookie": "jwt"
+    },
+    "limit-req": {
+      "rate": 100,
+      "burst": 50,
+      "rejected_code": 429,
+      "rejected_msg": "請求過於頻繁，請稍後再試",
+      "key": "remote_addr"
+    },
+    "cors": {
+      "allow_origins": "*",
+      "allow_methods": "GET,POST,OPTIONS",
+      "allow_headers": "Authorization,Content-Type",
+      "max_age": 3600
+    },
+    "prometheus": {
+      "prefer_name": true
+    }
+  },
+  "status": 1
+}'
+
+# 3.2 GitHub MCP Server
+curl -X PUT http://localhost:9180/apisix/admin/routes/mcp-github \
+-H "X-API-KEY: your-admin-key-here" \
+-H "Content-Type: application/json" \
+-d '{
+  "name": "MCP GitHub Server",
+  "desc": "提供 GitHub 操作的 MCP 服務",
+  "uri": "/mcp/github/*",
+  "methods": ["GET", "POST", "OPTIONS"],
+  "plugins": {
+    "mcp-bridge": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github",
+        "--owner", "your-org",
+        "--repo", "your-repo"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "key-auth": {},
+    "limit-req": {
+      "rate": 50,
+      "burst": 20,
+      "key": "consumer_name"
+    },
+    "prometheus": {
+      "prefer_name": true
+    }
+  },
+  "status": 1
+}'
+
+# 3.3 Slack MCP Server
+curl -X PUT http://localhost:9180/apisix/admin/routes/mcp-slack \
+-H "X-API-KEY: your-admin-key-here" \
+-H "Content-Type: application/json" \
+-d '{
+  "name": "MCP Slack Server",
+  "desc": "提供 Slack 整合的 MCP 服務",
+  "uri": "/mcp/slack/*",
+  "methods": ["GET", "POST", "OPTIONS"],
+  "plugins": {
+    "mcp-bridge": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-slack"
+      ],
+      "env": {
+        "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
+        "SLACK_TEAM_ID": "${SLACK_TEAM_ID}"
+      }
+    },
+    "jwt-auth": {},
+    "limit-conn": {
+      "conn": 10,
+      "burst": 5,
+      "default_conn_delay": 0.1,
+      "key": "remote_addr"
+    },
+    "prometheus": {}
+  },
+  "status": 1
+}'
+
+# 3.4 PostgreSQL MCP Server
+curl -X PUT http://localhost:9180/apisix/admin/routes/mcp-postgres \
+-H "X-API-KEY: your-admin-key-here" \
+-H "Content-Type: application/json" \
+-d '{
+  "name": "MCP PostgreSQL Server",
+  "desc": "提供 PostgreSQL 數據庫訪問的 MCP 服務",
+  "uri": "/mcp/postgres/*",
+  "methods": ["GET", "POST", "OPTIONS"],
+  "plugins": {
+    "mcp-bridge": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres"
+      ],
+      "env": {
+        "POSTGRES_CONNECTION_STRING": "postgresql://user:password@localhost:5432/dbname"
+      }
+    },
+    "jwt-auth": {},
+    "limit-req": {
+      "rate": 200,
+      "burst": 100,
+      "key": "consumer_name"
+    },
+    "wolf-rbac": {
+      "appid": "mcp-app",
+      "header_prefix": "X-"
+    },
+    "prometheus": {}
+  },
+  "status": 1
+}'
+
+# ============================================
+# 4. 創建 JWT Consumer
+# ============================================
+curl -X PUT http://localhost:9180/apisix/admin/consumers/ai-agent-1 \
+-H "X-API-KEY: your-admin-key-here" \
+-H "Content-Type: application/json" \
+-d '{
+  "username": "ai-agent-1",
+  "desc": "AI Agent 客戶端 1",
+  "plugins": {
+    "jwt-auth": {
+      "key": "ai-agent-key-1",
+      "secret": "your-jwt-secret-here",
+      "algorithm": "HS256",
+      "exp": 86400
+    }
+  }
+}'
+
+# ============================================
+# 5. 創建 API Key Consumer
+# ============================================
+curl -X PUT http://localhost:9180/apisix/admin/consumers/github-client \
+-H "X-API-KEY: your-admin-key-here" \
+-H "Content-Type: application/json" \
+-d '{
+  "username": "github-client",
+  "desc": "GitHub MCP 客戶端",
+  "plugins": {
+    "key-auth": {
+      "key": "github-api-key-12345"
+    }
+  }
+}'
+
+# ============================================
+# 6. Prometheus 監控配置
+# ============================================
+# prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'apisix'
+    metrics_path: '/apisix/prometheus/metrics'
+    static_configs:
+      - targets: ['apisix:9091']
+        labels:
+          service: 'apisix-gateway'
+
+# ============================================
+# 7. 健康檢查配置
+# ============================================
+curl -X PUT http://localhost:9180/apisix/admin/routes/health \
+-H "X-API-KEY: your-admin-key-here" \
+-H "Content-Type: application/json" \
+-d '{
+  "name": "Health Check",
+  "uri": "/health",
+  "methods": ["GET"],
+  "plugins": {
+    "response-rewrite": {
+      "body": "{\"status\":\"healthy\",\"timestamp\":\"$time_iso8601\"}",
+      "headers": {
+        "Content-Type": "application/json"
+      }
+    }
+  },
+  "status": 1
+}'
+
+# ============================================
+# 8. 使用範例
+# ============================================
+
+# 8.1 獲取 JWT Token
+curl -X GET http://localhost:9080/apisix/plugin/jwt/sign \
+  -G \
+  --data-urlencode "key=ai-agent-key-1" \
+  --data-urlencode "payload={\"user\":\"agent-1\"}"
+
+# 8.2 使用 JWT 訪問 Filesystem MCP
+curl -X POST http://localhost:9080/mcp/filesystem/list \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/list",
+    "params": {}
+  }'
+
+# 8.3 使用 API Key 訪問 GitHub MCP
+curl -X POST http://localhost:9080/mcp/github/repo \
+  -H "apikey: github-api-key-12345" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "get_repository",
+      "arguments": {}
+    }
+  }'
+
+# 8.4 SSE 串流訪問
+curl -N -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  http://localhost:9080/mcp/filesystem/stream
+
+# ============================================
+# 9. 環境變數配置
+# ============================================
+# .env
+GITHUB_TOKEN=ghp_your_github_token_here
+SLACK_BOT_TOKEN=xoxb-your-slack-token
+SLACK_TEAM_ID=T123456789
+POSTGRES_CONNECTION_STRING=postgresql://user:pass@db:5432/mydb
+
+# ============================================
+# 10. 啟動指令
+# ============================================
+
+# 啟動所有服務
+docker-compose up -d
+
+# 檢查服務狀態
+docker-compose ps
+
+# 查看 APISIX 日誌
+docker-compose logs -f apisix
+
+# 查看 Prometheus 監控
+# 訪問 http://localhost:9090
+
+# 查看 Grafana 儀表板
+# 訪問 http://localhost:3000
+
+# ============================================
+# 11. 測試腳本
+# ============================================
+# test-mcp.sh
+#!/bin/bash
+
+echo "=== Testing APISIX + MCP Integration ==="
+
+# 健康檢查
+echo "1. Health Check..."
+curl -s http://localhost:9080/health | jq
+
+# 獲取 JWT Token
+echo "2. Getting JWT Token..."
+JWT=$(curl -s -X GET "http://localhost:9080/apisix/plugin/jwt/sign?key=ai-agent-key-1" | jq -r '.token')
+echo "JWT Token: $JWT"
+
+# 測試 Filesystem MCP
+echo "3. Testing Filesystem MCP..."
+curl -s -X POST http://localhost:9080/mcp/filesystem/list \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/list"
+  }' | jq
+
+echo "=== Tests Complete ==="
+
+# ============================================
+# 12. 進階配置：負載均衡 + Session 保持
+# ============================================
+curl -X PUT http://localhost:9180/apisix/admin/upstreams/mcp-cluster \
+-H "X-API-KEY: your-admin-key-here" \
+-H "Content-Type: application/json" \
+-d '{
+  "name": "MCP Cluster",
+  "type": "chash",
+  "hash_on": "header",
+  "key": "X-Session-Id",
+  "nodes": {
+    "apisix-node-1:9080": 1,
+    "apisix-node-2:9080": 1,
+    "apisix-node-3:9080": 1
+  },
+  "checks": {
+    "active": {
+      "type": "http",
+      "http_path": "/health",
+      "healthy": {
+        "interval": 2,
+        "successes": 2
+      },
+      "unhealthy": {
+        "interval": 1,
+        "http_failures": 2
+      }
+    }
+  }
+}'
+
+# ============================================
+# 完成！現在你有一個完整的 APISIX + MCP 整合系統
+# 
+# 特性包括：
+# ✅ 多個 MCP Server 支持
+# ✅ JWT 和 API Key 認證
+# ✅ 請求限流和連接控制
+# ✅ Prometheus 監控
+# ✅ 健康檢查
+# ✅ CORS 支持
+# ✅ 負載均衡和 Session 保持
+# ✅ Docker Compose 一鍵部署
+# ============================================

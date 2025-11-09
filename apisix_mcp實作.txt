@@ -1,0 +1,305 @@
+這是個很棒的想法!讓我搜尋一下 Spring AI MCP 的動態 Tools 生成能力。太棒了!找到非常完整的資訊。**答案是肯定的** - Spring AI MCP 完全支援動態生成 Tools!讓我為你整理實作方案:
+
+## ✅ 是的,可以動態生成 Tools!
+
+Spring AI 的 MCP 實作提供了在啟動時和運行時動態添加 MCP 工具的簡單方法
+
+## 實作方案
+
+### 方案 1: 運行時動態添加 Tools (推薦)
+
+```java
+@SpringBootApplication
+public class DynamicMcpServerApplication {
+    
+    @Autowired
+    private McpSyncServer mcpSyncServer;
+    
+    @Autowired
+    private RestTemplate restTemplate;
+    
+    // 1. 啟動時添加的工具
+    @Bean
+    public ToolCallbackProvider staticTools() {
+        return MethodToolCallbackProvider.builder()
+            .toolObjects(new StaticApiService())
+            .build();
+    }
+    
+    // 2. 動態添加工具的 REST API
+    @RestController
+    @RequestMapping("/admin/mcp")
+    public class McpAdminController {
+        
+        /**
+         * 動態註冊新的 API 為 MCP Tool
+         */
+        @PostMapping("/register-api")
+        public ResponseEntity<String> registerNewApi(
+            @RequestBody ApiRegistrationRequest request) {
+            
+            try {
+                // 根據 API 資訊動態生成 Tool
+                DynamicApiTool newTool = createDynamicTool(request);
+                
+                // 轉換為 MCP Tool Specification
+                ToolCallback[] callbacks = ToolCallbacks.from(newTool);
+                List<SyncToolSpecification> toolSpecs = 
+                    McpToolUtils.toSyncToolSpecifications(callbacks);
+                
+                // 動態註冊到 MCP Server
+                toolSpecs.forEach(tool -> {
+                    mcpSyncServer.addTool(tool);
+                });
+                
+                // 通知客戶端工具列表已更新
+                mcpSyncServer.notifyToolsListChanged();
+                
+                return ResponseEntity.ok("API registered as MCP tool: " + request.getName());
+                
+            } catch (Exception e) {
+                return ResponseEntity.badRequest()
+                    .body("Failed to register: " + e.getMessage());
+            }
+        }
+        
+        /**
+         * 移除已註冊的工具
+         */
+        @DeleteMapping("/remove-tool/{toolName}")
+        public ResponseEntity<String> removeTool(@PathVariable String toolName) {
+            mcpSyncServer.removeTool(toolName);
+            mcpSyncServer.notifyToolsListChanged();
+            return ResponseEntity.ok("Tool removed: " + toolName);
+        }
+    }
+    
+    /**
+     * 根據 API 配置動態創建 Tool 物件
+     */
+    private DynamicApiTool createDynamicTool(ApiRegistrationRequest request) {
+        return new DynamicApiTool(
+            request.getName(),
+            request.getDescription(),
+            request.getEndpoint(),
+            request.getMethod(),
+            request.getParameters(),
+            restTemplate
+        );
+    }
+}
+```
+
+### 方案 2: 動態 Schema 處理
+
+工具可以接受 CallToolRequest 來處理運行時 schema
+
+```java
+@Component
+public class DynamicApiAdapter {
+    
+    @Autowired
+    private RestTemplate restTemplate;
+    
+    @Autowired
+    private ApiRegistry apiRegistry; // 你的 API 註冊表
+    
+    /**
+     * 彈性工具 - 可處理任意 API 調用
+     */
+    @Tool(description = "Dynamically call registered external APIs")
+    public CallToolResult callExternalApi(CallToolRequest request) {
+        
+        Map<String, Object> args = request.arguments();
+        
+        // 從參數中取得目標 API 名稱
+        String apiName = (String) args.get("api_name");
+        Map<String, Object> apiParams = 
+            (Map<String, Object>) args.get("parameters");
+        
+        // 從註冊表查詢 API 配置
+        ApiConfig apiConfig = apiRegistry.getApi(apiName);
+        
+        if (apiConfig == null) {
+            return CallToolResult.builder()
+                .isError(true)
+                .addTextContent("API not found: " + apiName)
+                .build();
+        }
+        
+        try {
+            // 動態調用 API
+            String result = callApi(apiConfig, apiParams);
+            
+            return CallToolResult.builder()
+                .addTextContent(result)
+                .build();
+                
+        } catch (Exception e) {
+            return CallToolResult.builder()
+                .isError(true)
+                .addTextContent("API call failed: " + e.getMessage())
+                .build();
+        }
+    }
+    
+    /**
+     * 執行實際的 API 調用
+     */
+    private String callApi(ApiConfig config, Map<String, Object> params) {
+        String url = buildUrl(config.getEndpoint(), params);
+        
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        
+        if (config.getAuthType() == AuthType.BEARER) {
+            headers.setBearerAuth(config.getToken());
+        }
+        
+        HttpEntity<?> entity = new HttpEntity<>(params, headers);
+        
+        ResponseEntity<String> response = restTemplate.exchange(
+            url,
+            HttpMethod.valueOf(config.getMethod()),
+            entity,
+            String.class
+        );
+        
+        return response.getBody();
+    }
+}
+```
+
+### 方案 3: 從配置文件自動生成 Tools
+
+```java
+@Configuration
+public class ApiToMcpAutoConfiguration {
+    
+    @Autowired
+    private McpSyncServer mcpSyncServer;
+    
+    @Bean
+    public CommandLineRunner registerApisFromConfig(
+        @Value("${apis.config.path}") String configPath) {
+        
+        return args -> {
+            // 讀取 API 配置文件
+            List<ApiDefinition> apiDefinitions = 
+                loadApiDefinitions(configPath);
+            
+            // 為每個 API 動態生成 Tool
+            for (ApiDefinition api : apiDefinitions) {
+                DynamicApiTool tool = new DynamicApiTool(api);
+                
+                ToolCallback[] callbacks = ToolCallbacks.from(tool);
+                List<SyncToolSpecification> specs = 
+                    McpToolUtils.toSyncToolSpecifications(callbacks);
+                
+                specs.forEach(mcpSyncServer::addTool);
+            }
+            
+            mcpSyncServer.notifyToolsListChanged();
+            
+            System.out.println("Registered " + apiDefinitions.size() + 
+                             " APIs as MCP tools");
+        };
+    }
+}
+```
+
+### API 配置範例 (YAML)
+
+```yaml
+apis:
+  config:
+    path: classpath:api-definitions.yaml
+
+# api-definitions.yaml
+apis:
+  - name: get_customer
+    description: "Retrieve customer information by ID"
+    endpoint: "http://legacy-system.com/axis/CustomerService"
+    method: POST
+    type: SOAP
+    auth:
+      type: BASIC
+      username: ${LEGACY_USER}
+      password: ${LEGACY_PASS}
+    parameters:
+      - name: customer_id
+        type: string
+        required: true
+        description: "Customer ID"
+        
+  - name: get_orders
+    description: "Get order list by customer"
+    endpoint: "http://order-api.com/api/orders"
+    method: GET
+    type: REST
+    auth:
+      type: BEARER
+      token: ${ORDER_API_TOKEN}
+    parameters:
+      - name: customer_id
+        type: string
+        required: true
+      - name: status
+        type: string
+        required: false
+        enum: [pending, completed, cancelled]
+```
+
+### DynamicApiTool 實作
+
+```java
+public class DynamicApiTool {
+    
+    private final String name;
+    private final String description;
+    private final String endpoint;
+    private final String method;
+    private final List<ParameterDefinition> parameters;
+    private final RestTemplate restTemplate;
+    
+    @Tool // 使用 @Tool 註解讓它被自動識別
+    public String execute(Map<String, Object> params) {
+        // 執行 API 調用邏輯
+        return callApi(params);
+    }
+    
+    private String callApi(Map<String, Object> params) {
+        // 根據配置執行實際的 API 調用
+        // 支援 REST, SOAP, GraphQL 等不同類型
+    }
+}
+```
+
+## 關鍵優勢
+
+MCP 伺服器可以在不重啟的情況下添加或移除工具,客戶端可以檢測工具變更並立即讓 AI 模型使用
+
+### 整合 APISIX 的完整架構
+
+```
+Claude/AI Client (MCP Client)
+    ↓
+Spring AI MCP Server (動態 Tools)
+    ↓
+APISIX API Gateway (路由/認證/限流)
+    ↓
+├─ Legacy Axis Web Service 1
+├─ REST API Service 2
+├─ REST API Service 3
+└─ SOAP Service 4
+```
+
+## 實務建議
+
+1. **初期開發**: 使用配置文件定義所有 API,啟動時自動註冊
+2. **進階功能**: 提供管理 API 讓運維人員動態增減 Tools
+3. **監控**: 記錄每個 Tool 的調用次數和性能
+4. **錯誤處理**: 完善的錯誤處理和重試機制
+5. **文檔生成**: 從 API 配置自動生成 Tool 說明文檔
+
+這樣的架構可以讓你輕鬆管理多個異構 API,並透過統一的 MCP 介面提供給 AI 使用!需要更詳細的實作範例嗎?
