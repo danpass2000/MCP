@@ -18,3 +18,11 @@ Richardson博士提出的RESTful Web Service的設計風格,將REST分成了0~3�
 
 Google Chrome的擴充工具Advanced REST client(ARC)來做REST資源請求的測試與介紹@RestController的相關的參數
 @RestController是組合的註解,結合了@Controller和@ResponseBody
+
+-- MCP Host (python)
+npx @modelcontextprotocol/inspector -e JAVA_TOOL_OPTIONS=-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005 java -jar target/sample-mcp-server-0.0.1-SNAPSHOT.jar --port 8080 --host localhost
+
+mvn package -DskipTests
+
+java -jar target/mcp-weather-starter-webflux-server-0.0.1-SNAPSHOT.jar
+http://127.0.0.1:8080/mcp
